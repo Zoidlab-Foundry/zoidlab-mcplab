@@ -27,9 +27,34 @@ export const api = {
     req<any>("/api/test", { method: "POST", body: JSON.stringify(b) }),
   tests: () => req<{ tests: any[] }>("/api/tests").then((d) => d.tests),
   getTest: (id: string) => req<any>(`/api/tests/${id}`),
+  job: (id: string) => req<any>(`/api/jobs/${id}`),
 
   exportUrl: (id: string) => `/api/connectors/${id}/export`,
 };
+
+const TERMINAL = ["succeeded", "partial", "failed", "blocked", "timed_out", "cancelled", "interrupted"];
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// Submit a durable job and poll it to completion, then return the finished record.
+export async function runToCompletion(
+  submit: () => Promise<any>,
+  getRecord: (id: string) => Promise<any>,
+  onStatus?: (s: string) => void,
+): Promise<any> {
+  const sub = await submit();
+  if (!sub?.job_id) return sub;
+  let job = await api.job(sub.job_id);
+  onStatus?.(job.status);
+  let tries = 0;
+  while (!TERMINAL.includes(job.status) && tries < 90) {
+    await sleep(800);
+    job = await api.job(sub.job_id);
+    onStatus?.(job.status);
+    tries++;
+  }
+  const rec = await getRecord(sub.run_id);
+  return { ...rec, _job: job };
+}
 
 export const ms = (n: number | null | undefined) => (n == null ? "—" : n >= 1000 ? (n / 1000).toFixed(2) + "s" : Math.round(n) + "ms");
 export const num = (n: number) => (n ?? 0).toLocaleString();

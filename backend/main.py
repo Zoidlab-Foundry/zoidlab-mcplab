@@ -18,6 +18,7 @@ import database as db
 import mcp_client
 import exporter
 import foundry
+import jobs
 import seed_mcp
 from auth import session, require_pro, entitlement
 
@@ -25,6 +26,10 @@ from auth import session, require_pro, entitlement
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init()
+    jobs.init()
+    interrupted = jobs.reconcile()
+    if interrupted:
+        print(f"[mcplab] reconciled {interrupted} interrupted job(s)")
     n = seed_mcp.run()
     if n:
         print(f"[mcplab] seeded {n} catalog connectors")
@@ -201,18 +206,46 @@ async def test_tool(body: TestBody, request: Request, owner: str = Depends(requi
         db.finish_test_run(rid, {"status": "blocked", "decision": "trustgate_blocked",
                                  "error": "TrustGate blocked: " + "; ".join(pf.get("reasons") or [])})
         return db.get_test_run(rid, owner)
-    # 5. real call
+    # 5. real call — durable tracked job (§1.3)
     rid = db.create_test_run(c, body.tool_name, body.arguments, owner, corr)
-    res = await mcp_client.call_tool(c.get("endpoint_url"), body.tool_name, body.arguments or {},
-                                     auth_type=c.get("auth_type", "none"), auth_value=body.auth_value)
-    if res.get("ok"):
-        db.finish_test_run(rid, {"status": "completed", "decision": pf.get("decision") or "allow",
-                                 "result": res.get("result"), "is_error": res.get("is_error"),
-                                 "latency_ms": res.get("latency_ms")})
-    else:
-        db.finish_test_run(rid, {"status": "failed", "decision": pf.get("decision") or "allow",
-                                 "error": res.get("error"), "latency_ms": res.get("latency_ms")})
-    return db.get_test_run(rid, owner)
+    endpoint = c.get("endpoint_url"); atype = c.get("auth_type", "none"); aval = body.auth_value
+    tool = body.tool_name; args = body.arguments or {}; decision = pf.get("decision") or "allow"
+
+    async def runner():
+        res = await mcp_client.call_tool(endpoint, tool, args, auth_type=atype, auth_value=aval)
+        if res.get("ok"):
+            return {"status": "completed", "decision": decision, "result": res.get("result"),
+                    "is_error": res.get("is_error"), "latency_ms": res.get("latency_ms")}
+        return {"status": "failed", "decision": decision, "error": res.get("error"),
+                "latency_ms": res.get("latency_ms")}
+
+    def status_of(res):
+        if (res or {}).get("status") == "completed":
+            return "partial" if (res or {}).get("is_error") else "succeeded"
+        return "failed"
+
+    job = jobs.submit(owner, "mcp_test", rid, runner,
+                      on_result=lambda res: db.finish_test_run(rid, res), timeout_s=60, status_of=status_of)
+    return {"job_id": job["id"], "run_id": rid, "status": job["status"], "test": db.get_test_run(rid, owner)}
+
+
+# --- jobs ---
+@app.get("/api/jobs/{jid}")
+def get_job(jid: str, request: Request, owner: str = Depends(require_owner)):
+    j = jobs.get(jid, owner)
+    if not j:
+        raise HTTPException(404, "not_found")
+    return j
+
+
+@app.get("/api/jobs")
+def list_jobs(request: Request, owner: str = Depends(require_owner)):
+    return {"jobs": jobs.list_jobs(owner)}
+
+
+@app.post("/api/jobs/{jid}/cancel")
+def cancel_job(jid: str, request: Request, owner: str = Depends(require_owner)):
+    return {"ok": jobs.cancel(jid, owner)}
 
 
 @app.get("/api/tests")

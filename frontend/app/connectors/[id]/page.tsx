@@ -1,7 +1,7 @@
 "use client";
 import { use, useEffect, useState } from "react";
 import Link from "next/link";
-import { api, ms } from "../../../lib/api";
+import { api, ms, runToCompletion } from "../../../lib/api";
 
 export default function ConnectorDetail({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
@@ -53,7 +53,10 @@ export default function ConnectorDetail({ params }: { params: Promise<{ id: stri
     let args = {};
     try { args = JSON.parse(testArgs || "{}"); } catch { setTestResult({ status: "failed", error: "arguments must be valid JSON" }); setBusy(null); return; }
     try {
-      const r = await api.test({ connector_id: id, tool_name: testTool, arguments: args, auth_value: authValue || undefined, approve });
+      const r = await runToCompletion(
+        () => api.test({ connector_id: id, tool_name: testTool, arguments: args, auth_value: authValue || undefined, approve }),
+        (rid) => api.getTest(rid),
+      );
       setTestResult(r); load();
     } catch (e: any) { setTestResult({ status: "failed", error: e.message }); }
     finally { setBusy(null); }
