@@ -14,12 +14,13 @@ from fastapi import FastAPI, Request, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Optional, List
 
-import database as db
+import db_pg as db
 import mcp_client
 import exporter
 import foundry
 import jobs
 import seed_mcp
+from tasks import run_test as run_test_task
 from auth import session, require_pro, entitlement
 
 
@@ -206,27 +207,14 @@ async def test_tool(body: TestBody, request: Request, owner: str = Depends(requi
         db.finish_test_run(rid, {"status": "blocked", "decision": "trustgate_blocked",
                                  "error": "TrustGate blocked: " + "; ".join(pf.get("reasons") or [])})
         return db.get_test_run(rid, owner)
-    # 5. real call — durable tracked job (§1.3)
+    # 5. real call — durable tracked Celery job (§1.3 / §3.2)
     rid = db.create_test_run(c, body.tool_name, body.arguments, owner, corr)
-    endpoint = c.get("endpoint_url"); atype = c.get("auth_type", "none"); aval = body.auth_value
-    tool = body.tool_name; args = body.arguments or {}; decision = pf.get("decision") or "allow"
-
-    async def runner():
-        res = await mcp_client.call_tool(endpoint, tool, args, auth_type=atype, auth_value=aval)
-        if res.get("ok"):
-            return {"status": "completed", "decision": decision, "result": res.get("result"),
-                    "is_error": res.get("is_error"), "latency_ms": res.get("latency_ms")}
-        return {"status": "failed", "decision": decision, "error": res.get("error"),
-                "latency_ms": res.get("latency_ms")}
-
-    def status_of(res):
-        if (res or {}).get("status") == "completed":
-            return "partial" if (res or {}).get("is_error") else "succeeded"
-        return "failed"
-
-    job = jobs.submit(owner, "mcp_test", rid, runner,
-                      on_result=lambda res: db.finish_test_run(rid, res), timeout_s=60, status_of=status_of)
-    return {"job_id": job["id"], "run_id": rid, "status": job["status"], "test": db.get_test_run(rid, owner)}
+    decision = pf.get("decision") or "allow"
+    job_id = jobs.create(owner, "mcp_test", rid, timeout_s=60)
+    async_res = run_test_task.delay(job_id, rid, c["id"], body.tool_name, body.arguments or {},
+                                    body.auth_value, decision, owner, corr)
+    jobs.set_celery(job_id, owner, async_res.id)
+    return {"job_id": job_id, "run_id": rid, "status": "queued", "test": db.get_test_run(rid, owner)}
 
 
 # --- jobs ---

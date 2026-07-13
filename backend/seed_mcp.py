@@ -5,7 +5,7 @@ a given endpoint is live and reachable. Discovery is what proves an endpoint rea
 connector at a reachable HTTP MCP endpoint and MCPLab does a genuine handshake. No tools are
 fabricated here; the tools list stays empty until a real discovery populates it.
 """
-import database as db
+import db_pg as db
 
 _CATALOG = [
     {"name": "GitHub MCP", "description": "Issues, PRs, repos, and code search over the GitHub MCP server.",

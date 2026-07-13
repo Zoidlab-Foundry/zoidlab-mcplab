@@ -1,22 +1,17 @@
-"""Durable, tracked background jobs (blueprint §1.3).
+"""Durable tracked jobs backed by Postgres + Celery (§1.3 / §3.2).
 
-Long-running work (a real relay run) is submitted as a durable job: it is persisted to SQLite
-before it starts, executed in a background task with a timeout, and moves through an explicit
-lifecycle — queued → running → (succeeded | partial | failed | blocked | timed_out | cancelled).
-Jobs survive a process restart: on startup, any job left mid-flight is reconciled to
-`interrupted` (and its underlying run marked failed) rather than silently lost. Clients poll
-GET /api/jobs/{id} for status instead of holding a long HTTP request open.
-
-This is a single-process durable tracker (SQLite + asyncio), not a distributed queue — the same
-interface a Redis/Celery worker would sit behind, so callers don't change when that arrives.
+The API records a job row (queued) and enqueues a Celery task; a separate worker process
+executes it and drives the row through queued → running → succeeded | partial | failed |
+blocked | timed_out | cancelled. Because the worker is its own service with a Redis-backed
+queue, jobs survive an API restart; `reconcile()` on API startup sweeps rows a dead worker
+left behind (older than a grace window) into `interrupted`, and terminal failures after all
+retries are copied to `dead_letters`. Job rows are tenant-scoped by RLS like everything else.
 """
-import asyncio
 import datetime
-
-import database as db
+import db_pg as db
 
 TERMINAL = {"succeeded", "partial", "failed", "blocked", "timed_out", "cancelled", "interrupted"}
-_TASKS = {}  # job_id -> asyncio.Task (in-process handle for cancellation)
+_GRACE_SECONDS = 1800  # a 'running' row older than this with no worker is treated as interrupted
 
 
 def _now():
@@ -24,64 +19,39 @@ def _now():
 
 
 def init():
-    with db._conn() as c:
-        c.execute("""CREATE TABLE IF NOT EXISTS jobs (
-            id TEXT PRIMARY KEY, owner_user_id TEXT, kind TEXT, resource_id TEXT, status TEXT,
-            error TEXT, timeout_s INTEGER, created_at TEXT, started_at TEXT, finished_at TEXT)""")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_jobs_owner ON jobs(owner_user_id, created_at)")
+    pass  # jobs table is created in db_pg.init()
 
 
-def reconcile():
-    """Mark jobs left running/queued by a crash or restart as interrupted."""
-    with db._conn() as c:
-        rows = c.execute("SELECT id FROM jobs WHERE status IN ('queued','running')").fetchall()
-        for r in rows:
-            c.execute("UPDATE jobs SET status='interrupted', error='process restarted', finished_at=? WHERE id=?",
-                      (_now(), r["id"]))
-    return len(rows)
-
-
-def _set(job_id, **fields):
-    cols = ", ".join(f"{k}=?" for k in fields)
-    with db._conn() as c:
-        c.execute(f"UPDATE jobs SET {cols} WHERE id=?", (*fields.values(), job_id))
-
-
-def get(job_id, owner=None):
-    with db._conn() as c:
-        if owner is None:
-            r = c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
-        else:
-            r = c.execute("SELECT * FROM jobs WHERE id=? AND (owner_user_id IS NULL OR owner_user_id=?)",
-                          (job_id, owner)).fetchone()
-    return dict(r) if r else None
-
-
-def list_jobs(owner, limit=50):
-    with db._conn() as c:
-        rows = c.execute("SELECT * FROM jobs WHERE (owner_user_id IS NULL OR owner_user_id=?) ORDER BY created_at DESC LIMIT ?",
-                         (owner, limit)).fetchall()
-    return [dict(r) for r in rows]
-
-
-def submit(owner, kind, resource_id, runner, on_result=None, timeout_s=120, status_of=None):
-    """Create a durable job and start it in the background.
-
-    runner()      -> awaitable returning the engine result dict
-    on_result(res)-> optional sync callback to persist the result (e.g. db.finish_run)
-    status_of(res)-> optional map from result dict to a terminal job status
-    """
+def create(owner, kind, resource_id, timeout_s=120):
     jid = db.new_id("job")
-    with db._conn() as c:
-        c.execute("INSERT INTO jobs (id,owner_user_id,kind,resource_id,status,timeout_s,created_at) VALUES (?,?,?,?,'queued',?,?)",
-                  (jid, owner, kind, resource_id, timeout_s, _now()))
-    task = asyncio.create_task(_run(jid, runner, on_result, timeout_s, status_of))
-    _TASKS[jid] = task
-    task.add_done_callback(lambda _t: _TASKS.pop(jid, None))
-    return get(jid, owner)
+    with db._tx(owner) as cur:
+        cur.execute("""INSERT INTO jobs (id,owner_user_id,kind,resource_id,status,timeout_s,created_at)
+                       VALUES (%s,%s,%s,%s,'queued',%s,%s)""",
+                    (jid, owner, kind, resource_id, timeout_s, _now()))
+    return jid
 
 
-def _default_status(res):
+def set_celery(jid, owner, celery_id):
+    with db._tx(owner) as cur:
+        cur.execute("UPDATE jobs SET celery_id=%s WHERE id=%s", (celery_id, jid))
+
+
+def mark_running(jid, owner, attempts=1):
+    with db._tx(owner) as cur:
+        cur.execute("UPDATE jobs SET status='running', attempts=%s, started_at=COALESCE(started_at,%s) WHERE id=%s",
+                    (attempts, _now(), jid))
+
+
+def mark(jid, owner, status, error=None, dead=False):
+    with db._tx(owner) as cur:
+        cur.execute("UPDATE jobs SET status=%s, error=%s, finished_at=%s WHERE id=%s", (status, error, _now(), jid))
+        if dead:
+            cur.execute("""INSERT INTO dead_letters (id,owner_user_id,kind,resource_id,error,created_at)
+                           SELECT %s, owner_user_id, kind, resource_id, %s, %s FROM jobs WHERE id=%s""",
+                        (db.new_id("dl"), error, _now(), jid))
+
+
+def status_from_result(res):
     s = (res or {}).get("status")
     if s == "completed":
         outcome = (res or {}).get("outcome")
@@ -93,40 +63,41 @@ def _default_status(res):
     return "succeeded" if s else "failed"
 
 
-async def _run(jid, runner, on_result, timeout_s, status_of):
-    _set(jid, status="running", started_at=_now())
-    try:
-        res = await asyncio.wait_for(runner(), timeout=timeout_s)
-    except asyncio.CancelledError:
-        _set(jid, status="cancelled", error="cancelled by user", finished_at=_now())
-        raise
-    except asyncio.TimeoutError:
-        _set(jid, status="timed_out", error=f"exceeded {timeout_s}s", finished_at=_now())
-        if on_result:
-            try:
-                on_result({"status": "failed", "error": f"timed out after {timeout_s}s"})
-            except Exception:
-                pass
-        return
-    except Exception as e:
-        _set(jid, status="failed", error=str(e)[:400], finished_at=_now())
-        return
-    if on_result:
-        try:
-            on_result(res)
-        except Exception:
-            pass
-    status = (status_of or _default_status)(res)
-    _set(jid, status=status, error=(res or {}).get("error"), finished_at=_now())
+def mark_terminal(jid, owner, res):
+    mark(jid, owner, status_from_result(res), error=(res or {}).get("error"))
 
 
-def cancel(job_id, owner):
-    j = get(job_id, owner)
+def get(jid, owner=None):
+    with db._tx(owner) as cur:
+        cur.execute("SELECT * FROM jobs WHERE id=%s", (jid,))
+        return cur.fetchone()
+
+
+def list_jobs(owner, limit=50):
+    with db._tx(owner) as cur:
+        cur.execute("SELECT * FROM jobs ORDER BY created_at DESC LIMIT %s", (limit,))
+        return cur.fetchall()
+
+
+def cancel(jid, owner):
+    j = get(jid, owner)
     if not j or j["status"] in TERMINAL:
         return False
-    task = _TASKS.get(job_id)
-    if task:
-        task.cancel()
-        return True
-    _set(job_id, status="cancelled", error="cancelled by user", finished_at=_now())
+    # best-effort: revoke the Celery task if we have its id
+    if j.get("celery_id"):
+        try:
+            from celery_app import app as capp
+            capp.control.revoke(j["celery_id"], terminate=True, signal="SIGTERM")
+        except Exception:
+            pass
+    mark(jid, owner, "cancelled", "cancelled by user")
     return True
+
+
+def reconcile():
+    """Cross-tenant sweep (admin/superuser, bypasses RLS): interrupt stale in-flight jobs."""
+    cutoff = (datetime.datetime.utcnow() - datetime.timedelta(seconds=_GRACE_SECONDS)).isoformat() + "Z"
+    with db.admin_conn() as c:
+        cur = c.execute("""UPDATE jobs SET status='interrupted', error='reconciled after restart', finished_at=%s
+                           WHERE status IN ('queued','running') AND created_at < %s""", (_now(), cutoff))
+        return cur.rowcount
