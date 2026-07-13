@@ -1,0 +1,48 @@
+# Local dev for ZoidLab RAG Builder (Foundry Package 05).
+#   docker compose up --build
+# The prototype persists to SQLite (a Docker volume) with deterministic mock retrieval.
+# Postgres+pgvector and Redis are declared for production — enable with the "full" profile.
+services:
+  backend:
+    build: ./backend
+    environment:
+      - BUILDER_SESSION_SECRET=${BUILDER_SESSION_SECRET:-change-me}
+      - FOUNDRY_GATE_ENABLED=${FOUNDRY_GATE_ENABLED:-true}
+      - FOUNDRY_REQUIRED_PLAN=${FOUNDRY_REQUIRED_PLAN:-pro}
+      - MOCK_PRO_USER=${MOCK_PRO_USER:-false}
+      - RAG_ADMINS=${RAG_ADMINS:-}
+      - DATA_DIR=/data
+    volumes:
+      - rag_data:/data
+    ports:
+      - "8600:8600"
+  frontend:
+    build: ./frontend
+    environment:
+      - RAG_API_URL=http://backend:8600
+      - BUILDER_SESSION_SECRET=${BUILDER_SESSION_SECRET:-change-me}
+      - NYQUEST_API=${NYQUEST_API:-https://api.nyquest.ai}
+      - SESSION_COOKIE_DOMAIN=${SESSION_COOKIE_DOMAIN:-.zoidlab.ai}
+    ports:
+      - "3600:3600"
+    depends_on:
+      - backend
+  postgres:
+    image: pgvector/pgvector:pg16
+    profiles: ["full"]
+    environment:
+      - POSTGRES_USER=zoidlab
+      - POSTGRES_PASSWORD=zoidlab
+      - POSTGRES_DB=zoidlab_rag
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+  redis:
+    image: redis:7-alpine
+    profiles: ["full"]
+    ports:
+      - "6379:6379"
+volumes:
+  rag_data:
+  pg_data:
