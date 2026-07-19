@@ -2,6 +2,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useUser } from "../lib/useUser";
+import HelpGuide from "./HelpGuide";
 
 const LINKS = [
   { href: "/", label: "Dashboard" },
@@ -34,6 +35,14 @@ export default function MCPNav() {
         <div className="ml-auto flex items-center gap-2.5">
           <span className="hidden rounded-full border border-line px-2.5 py-1 text-[11px] text-faint sm:inline">Foundry 12</span>
           <span className="rounded-full border border-vi/30 bg-vi/10 px-2.5 py-1 text-[11px] font-medium text-vi">Nyquest Pro</span>
+          <a
+            href="https://foundry.zoidlab.ai"
+            className="flex items-center gap-1.5 rounded-lg border border-line px-3 py-1.5 text-[12px] text-dim transition hover:text-ink hover:bg-white/5"
+            title="Back to the Foundry hub"
+          >
+            <span className="text-vi">◈</span> Foundry
+          </a>
+          <HelpGuide />
           {user?.email && <span className="hidden max-w-[160px] truncate text-[12px] text-dim lg:inline" title={user.email}>{user.email}</span>}
         </div>
       </div>
