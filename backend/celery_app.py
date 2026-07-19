@@ -21,3 +21,20 @@ app.conf.update(
     result_expires=3600,
     broker_connection_retry_on_startup=True,
 )
+
+
+# Each prefork child must own its own Postgres pool: connections opened in the parent at
+# import break on fork, and the inherited pool times out on first use (PoolTimeout).
+from celery.signals import worker_process_init
+
+
+@worker_process_init.connect
+def _fresh_db_pool_per_child(**_):
+    import db_pg
+    from psycopg_pool import ConnectionPool
+    try:
+        db_pg._pool.close()
+    except Exception:
+        pass
+    db_pg._pool = ConnectionPool(db_pg.DATABASE_URL, min_size=1, max_size=10,
+                                 open=True, kwargs={"autocommit": False})
