@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { AssistantPanel } from "@foundry/ui";
 import MCPNav from "../components/MCPNav";
 import FoundryAccessGate from "../components/FoundryAccessGate";
 
@@ -13,6 +14,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en">
       <body className="antialiased min-h-screen bg-bg text-ink">
         <MCPNav />
+        <AssistantPanel app="MCPLab" />
         <main className="mx-auto w-full max-w-[1320px] px-5">
           <FoundryAccessGate packageLabel="Foundry Package 12">{children}</FoundryAccessGate>
         </main>
