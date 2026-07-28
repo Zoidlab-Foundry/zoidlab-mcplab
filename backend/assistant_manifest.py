@@ -25,9 +25,14 @@ MANIFEST = {
              assists={"new-connector": "the New connector button"}),
         page("/connectors/{id}", "Connector detail",
              "Discover tools, set governance (allow-list, approval, status), run test "
-             "calls, freeze versions, export.",
-             assists={"discover-tools": "the Discover tools button",
-                      "run-test": "the Run test call button"}),
+             "calls, freeze versions, export. IMPORTANT — two controls on this page are "
+             "conditional, so do not tell the user to click them before the precondition "
+             "holds: 'Discover tools' renders ONLY for http/sse transport connectors (it is "
+             "absent for stdio), and the test-call panel renders ONLY after tools have been "
+             "discovered. If the user has not discovered tools yet, guide them through "
+             "discovery first and only then to the test call.",
+             assists={"discover-tools": "the Discover tools button (http/sse connectors only)",
+                      "run-test": "the Run test call button (appears after tools are discovered)"}),
         page("/tests", "Test calls", "Every tool invocation with its governance decision."),
     ],
     "capabilities": [
