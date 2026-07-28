@@ -14,8 +14,12 @@ never persisted. Every data endpoint requires Nyquest Pro (fail-closed on the Ne
 AND the FastAPI backend).
 
 ## Layout
-- `backend/` — FastAPI + SQLite. `mcp_client.py` real JSON-RPC MCP client (SSRF-guarded);
-  `database.py` owner-scoped connectors/versions/test-runs; `main.py` the `/api` surface.
+- `backend/` — FastAPI + Postgres with per-tenant FORCE row-level security (every query runs as
+  the non-superuser `app_rls` role keyed on `app.current_owner`, so tenant isolation is enforced
+  by the database, not by application code). `mcp_client.py` real JSON-RPC MCP client
+  (SSRF-guarded); `db_pg.py` owner-scoped connectors/versions/test-runs; `celery_app.py` +
+  `tasks.py` Celery + Redis durable test-run jobs that survive an API restart; `main.py` the
+  `/api` surface.
 - `frontend/` — Next 15 + React 19 (indigo theme). Dashboard, Connectors (+ detail:
   discover/govern/test/version), Tests.
 

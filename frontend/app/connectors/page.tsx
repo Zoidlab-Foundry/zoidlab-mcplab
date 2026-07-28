@@ -30,7 +30,7 @@ export default function ConnectorsPage() {
           <h1 className="text-[22px] font-semibold">Connectors</h1>
           <p className="mt-1 text-[13px] text-dim">Register an MCP server, then discover, govern, test, and version it. Catalog entries are starting templates — point them at a reachable endpoint to make them real.</p>
         </div>
-        <button onClick={() => setOpen(true)} className="rounded-lg bg-vi px-4 py-2 text-[13px] font-semibold text-black hover:opacity-90">New connector</button>
+        <button data-assist="new-connector" onClick={() => setOpen(true)} className="rounded-lg bg-vi px-4 py-2 text-[13px] font-semibold text-black hover:opacity-90">New connector</button>
       </div>
 
       <div className="mt-6 grid gap-3 md:grid-cols-2">

@@ -96,7 +96,7 @@ export default function ConnectorDetail({ params }: { params: Promise<{ id: stri
                   <input value={authValue} onChange={(e) => setAuthValue(e.target.value)} type="password" placeholder={`${c.auth_type} value (used now, never stored)`}
                     className="flex-1 rounded-lg border border-line bg-panel2 px-3 py-1.5 text-[12.5px] text-ink outline-none focus:border-vi/50" />
                 )}
-                <button onClick={discover} disabled={busy === "discover" || !c.endpoint_url} className="rounded-lg bg-vi px-3 py-1.5 text-[12.5px] font-semibold text-black hover:opacity-90 disabled:opacity-40">
+                <button data-assist="discover-tools" onClick={discover} disabled={busy === "discover" || !c.endpoint_url} className="rounded-lg bg-vi px-3 py-1.5 text-[12.5px] font-semibold text-black hover:opacity-90 disabled:opacity-40">
                   {busy === "discover" ? "Handshaking…" : "Discover tools"}
                 </button>
               </div>
@@ -137,7 +137,7 @@ export default function ConnectorDetail({ params }: { params: Promise<{ id: stri
                 <textarea value={testArgs} onChange={(e) => setTestArgs(e.target.value)} rows={2} placeholder='{"arg": "value"}'
                   className="mt-2 w-full rounded-lg border border-line bg-panel px-3 py-2 font-mono text-[12px] text-ink outline-none focus:border-vi/50" />
                 <div className="mt-2 flex items-center gap-2">
-                  <button onClick={() => runTest(false)} disabled={busy === "test" || !testTool} className="rounded-lg bg-vi px-3 py-1.5 text-[12px] font-semibold text-black hover:opacity-90 disabled:opacity-40">
+                  <button data-assist="run-test" onClick={() => runTest(false)} disabled={busy === "test" || !testTool} className="rounded-lg bg-vi px-3 py-1.5 text-[12px] font-semibold text-black hover:opacity-90 disabled:opacity-40">
                     {busy === "test" ? "Calling…" : "Run test call"}
                   </button>
                   {c.human_approval && <button onClick={() => runTest(true)} disabled={busy === "test" || !testTool} className="rounded-lg border border-warn/40 px-3 py-1.5 text-[12px] text-warn hover:bg-warn/5">Approve & run</button>}
