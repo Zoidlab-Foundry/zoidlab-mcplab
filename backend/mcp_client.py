@@ -67,11 +67,34 @@ def _parse_body(r):
         return None
 
 
+_MAX_REDIRECTS = 3
+
+
 async def _rpc(client, url, headers, method, params, rid):
+    """One JSON-RPC POST, following redirects MANUALLY so every hop is SSRF-checked.
+
+    The clients are opened with follow_redirects=False on purpose. _ssrf_ok() validates only
+    the URL it is given, so letting httpx follow redirects itself would let a public endpoint
+    answer 307 (which preserves method AND body) with a Location pointing at loopback — and
+    the request would land on a sibling app on 127.0.0.1, inside the tunnel. Re-checking each
+    hop is the same approach rag-builder's ingest already uses.
+    """
     payload = {"jsonrpc": "2.0", "id": rid, "method": method, "params": params or {}}
-    r = await client.post(url, headers=headers, json=payload)
-    r.raise_for_status()
-    return _parse_body(r)
+    target = url
+    for _ in range(_MAX_REDIRECTS + 1):
+        r = await client.post(target, headers=headers, json=payload)
+        if r.status_code in (301, 302, 303, 307, 308):
+            loc = r.headers.get("location")
+            if not loc:
+                raise RuntimeError("redirect_without_location")
+            target = str(httpx.URL(target).join(loc))
+            ok, why = _ssrf_ok(target)
+            if not ok:
+                raise RuntimeError(f"redirect blocked: {why}")
+            continue
+        r.raise_for_status()
+        return _parse_body(r)
+    raise RuntimeError("too_many_redirects")
 
 
 async def discover(endpoint_url, auth_type="none", auth_value=None, timeout=15):
@@ -82,7 +105,7 @@ async def discover(endpoint_url, auth_type="none", auth_value=None, timeout=15):
     headers = _headers(auth_type, auth_value)
     t0 = time.perf_counter()
     try:
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as c:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as c:
             init = await _rpc(c, endpoint_url, headers, "initialize",
                               {"protocolVersion": PROTOCOL_VERSION, "capabilities": {},
                                "clientInfo": _CLIENT_INFO}, 1)
@@ -109,7 +132,7 @@ async def call_tool(endpoint_url, tool_name, arguments, auth_type="none", auth_v
     headers = _headers(auth_type, auth_value)
     t0 = time.perf_counter()
     try:
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as c:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as c:
             await _rpc(c, endpoint_url, headers, "initialize",
                        {"protocolVersion": PROTOCOL_VERSION, "capabilities": {}, "clientInfo": _CLIENT_INFO}, 1)
             res = await _rpc(c, endpoint_url, headers, "tools/call",
