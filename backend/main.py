@@ -156,6 +156,13 @@ async def discover(cid: str, body: DiscoverBody, owner: str = Depends(require_ow
     if c.get("transport") not in ("http", "sse"):
         return {"ok": False, "reachable": False, "error": "transport_not_discoverable",
                 "detail": f"{c.get('transport')} transport can't be reached from the control plane."}
+    # The per-call endpoint override is a convenience for testing YOUR OWN connector. On a
+    # shared catalog connector (owner_user_id IS NULL, visible to every tenant) it would be a
+    # poisoning primitive: point it at a server you control, and its crafted tool list gets
+    # persisted by save_discovery into the row everyone else reads. Discovery against the
+    # connector's own stored URL stays allowed, so the seeded catalog flow is unaffected.
+    if body.endpoint_url and c.get("owner_user_id") != owner:
+        raise HTTPException(403, "cannot_override_endpoint_on_a_connector_you_do_not_own")
     url = body.endpoint_url or c.get("endpoint_url")
     if not url:
         raise HTTPException(400, "no_endpoint_url")

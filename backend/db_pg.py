@@ -131,7 +131,7 @@ def create_connector(d, owner, catalog=False):
 
 def update_connector(cid, owner, fields):
     cur_c = get_connector(cid, owner)
-    if not cur_c or (cur_c.get("owner_user_id") and cur_c["owner_user_id"] != owner):
+    if not cur_c or cur_c.get("owner_user_id") != owner:
         return None
     cols, args = [], []
     for k in ("description", "transport", "endpoint_url", "auth_type", "auth_ref", "status", "risk_level"):
@@ -160,7 +160,7 @@ def save_discovery(cid, owner, tools, discovery):
 
 def delete_connector(cid, owner):
     cur_c = get_connector(cid, owner)
-    if not cur_c or (cur_c.get("owner_user_id") and cur_c["owner_user_id"] != owner):
+    if not cur_c or cur_c.get("owner_user_id") != owner:
         return False
     with _tx(owner) as cur:
         cur.execute("DELETE FROM connector_versions WHERE connector_id=%s", (cid,))
